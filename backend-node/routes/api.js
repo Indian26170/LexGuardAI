@@ -47,12 +47,21 @@ async function processWithAI({ document, audit, language, country, region, io, r
         io.to(roomId).emit('audit:progress', { auditId: audit._id, message: 'Extracting document text...' });
         io.to(roomId).emit('audit:progress', { auditId: audit._id, message: 'AI is reading your document...' });
 
-        const { data } = await axios.post(`${process.env.PYTHON_API_URL}/analyze`, {
-            document_path: document.storagePath,
-            document_id: document._id.toString(),
-            language, country, region,
-            doc_type: document.docType,
-        }, { timeout: 120_000 });
+        // Build FormData to send the actual file to Python
+        const FormData = require('form-data');
+        const fs = require('fs');
+        const form = new FormData();
+
+        form.append('file', fs.createReadStream(document.storagePath), document.originalName);
+        if (language && language !== 'en') form.append('target_language', language);
+        if (country) form.append('jurisdiction', country);
+        if (document.docType) form.append('document_type', document.docType);
+
+        const { data } = await axios.post(
+            `${process.env.PYTHON_API_URL}/analyze`,
+            form,
+            { headers: form.getHeaders(), timeout: 120_000 }
+        );
 
         let scoreLabel = 'HIGH_RISK';
         if (data.legalScore >= 71) scoreLabel = 'LOW_RISK';
