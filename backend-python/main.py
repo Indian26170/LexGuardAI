@@ -1,31 +1,31 @@
 import os
-from fastapi import FastAPI, UploadFile, File
-from pydantic import BaseModel
-import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from routers.analyze import router as analyze_router
 
 load_dotenv()
 
-app = FastAPI(title="LexGuard AI Python Backend")
+app = FastAPI(
+    title="LexGuard AI — Python Brain",
+    description="FastAPI service for legal document analysis using Gemini + LangChain",
+    version="1.0.0"
+)
 
-class AnalyzeRequest(BaseModel):
-    text: str
+# CORS — allow Node.js backend and local frontend
+origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
 
-@app.get("/")
-def read_root():
-    return {"message": "LexGuard AI Python Backend running"}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.post("/analyze")
-def analyze_endpoint(request: AnalyzeRequest):
-    # Placeholder for running langchain or document analysis
-    # e.g. use langchain, google-generativeai, etc.
-    return {"status": "success", "result": f"Analyzed: {request.text[:20]}..."}
-
-@app.post("/upload")
-def upload_document(file: UploadFile = File(...)):
-    # Placeholder for pypdf2, python-docx, chromadb processing
-    return {"filename": file.filename, "status": "processed"}
+# Mount routers
+app.include_router(analyze_router, prefix="")
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
