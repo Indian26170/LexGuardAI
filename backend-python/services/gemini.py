@@ -1,15 +1,18 @@
 import os
 import json
 import re
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from dotenv import load_dotenv
 from typing import Optional
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=os.getenv("NVIDIA_API_KEY")
+)
 
+MODEL = "meta/llama-3.1-70b-instruct"
 
 MASTER_SYSTEM_PROMPT = """
 You are LexGuard AI, an expert legal auditor with deep expertise in contract law, 
@@ -68,11 +71,11 @@ CLASSIFICATION RULES:
 Identify ALL significant clauses, minimum 5, maximum 20.
 Write summary in plain English a non-lawyer can understand.
 Be specific, concrete, and actionable.
+Return ONLY the JSON object. No markdown, no explanation, no extra text.
 """
 
 
 def build_analysis_prompt(document_text: str, jurisdiction: Optional[str] = None) -> str:
-    """Build the full prompt with optional jurisdiction context."""
     prompt = MASTER_SYSTEM_PROMPT
 
     if jurisdiction and jurisdiction.strip():
@@ -94,16 +97,40 @@ DOCUMENT TEXT TO AUDIT:
 
 
 def build_translation_prompt(summary_bullets: list, target_language: str) -> str:
-    """Prompt to translate summary bullets into target language."""
     bullets_text = "\n".join([f"{i+1}. {b}" for i, b in enumerate(summary_bullets)])
     return f"""
 Translate the following 5 legal summary bullets into {target_language}.
 Preserve legal accuracy — do NOT simplify terms that change meaning.
-Return ONLY a JSON array of 5 translated strings, no markdown.
+Return ONLY a JSON array of 5 translated strings, no markdown, no extra text.
 
 Original bullets:
 {bullets_text}
 """
+
+
+def call_nvidia(system_prompt: str, user_content: str, max_tokens: int = 4096) -> str:
+    """
+    Call NVIDIA NIM API with streaming and collect full response.
+    """
+    full_response = ""
+    
+    completion = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ],
+        temperature=0.2,
+        top_p=0.7,
+        max_tokens=max_tokens,
+        stream=True
+    )
+    
+    for chunk in completion:
+        if chunk.choices and chunk.choices[0].delta.content is not None:
+            full_response += chunk.choices[0].delta.content
+    
+    return full_response.strip()
 
 
 def analyze_document(
@@ -112,23 +139,19 @@ def analyze_document(
     target_language: Optional[str] = None
 ) -> dict:
     """
-    Run the full Gemini analysis on document text.
+    Run the full NVIDIA NIM analysis on document text.
     Returns parsed JSON result dict.
     """
     # Step 1: Main legal analysis
     analysis_prompt = build_analysis_prompt(document_text, jurisdiction)
-
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=analysis_prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            max_output_tokens=4096,
-        )
+    
+    raw_text = call_nvidia(
+        system_prompt="You are LexGuard AI, a legal auditor. Always respond with valid JSON only.",
+        user_content=analysis_prompt,
+        max_tokens=4096
     )
-    raw_text = response.text.strip()
 
-    # Strip markdown code fences if Gemini wraps in ```json
+    # Strip markdown code fences if model wraps in ```json
     raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text)
     raw_text = re.sub(r"\s*```$", "", raw_text)
 
@@ -140,16 +163,15 @@ def analyze_document(
             translation_prompt = build_translation_prompt(
                 result.get("summary", []), target_language
             )
-            trans_response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=translation_prompt,
-                config=types.GenerateContentConfig(temperature=0.1)
+            trans_raw = call_nvidia(
+                system_prompt="You are a legal translator. Always respond with a valid JSON array only.",
+                user_content=translation_prompt,
+                max_tokens=1024
             )
-            trans_raw = trans_response.text.strip()
             trans_raw = re.sub(r"^```(?:json)?\s*", "", trans_raw)
             trans_raw = re.sub(r"\s*```$", "", trans_raw)
             result["summary_translated"] = json.loads(trans_raw)
-        except Exception as e:
-            result["summary_translated"] = None  # Non-fatal
+        except Exception:
+            result["summary_translated"] = None
 
     return result

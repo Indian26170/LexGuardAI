@@ -56,7 +56,6 @@ async function processWithAI({ document, audit, language, country, region, io, r
         if (language && language !== 'en') form.append('target_language', language);
         if (country) form.append('jurisdiction', country);
         if (document.docType) form.append('document_type', document.docType);
-        form.append('demo', 'true'); // Remove this line when Gemini quota resets
 
         const { data } = await axios.post(
             `${process.env.PYTHON_API_URL}/analyze`,

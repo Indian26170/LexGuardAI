@@ -1,14 +1,18 @@
 import os
 import json
 import re
-from google import genai
-from google.genai import types
+from openai import OpenAI
 from dotenv import load_dotenv
 from typing import Optional
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+client = OpenAI(
+    base_url="https://integrate.api.nvidia.com/v1",
+    api_key=os.getenv("NVIDIA_API_KEY")
+)
+
+MODEL = "meta/llama-3.1-70b-instruct"
 
 JURISDICTION_LAWS = {
     "India": [
@@ -23,7 +27,7 @@ JURISDICTION_LAWS = {
         "Federal Arbitration Act",
         "Americans with Disabilities Act",
         "Fair Labor Standards Act",
-        "GDPR (California Consumer Privacy Act - CCPA)",
+        "California Consumer Privacy Act (CCPA)",
     ],
     "UK": [
         "Contracts (Rights of Third Parties) Act 1999",
@@ -40,11 +44,6 @@ JURISDICTION_LAWS = {
 
 
 def get_jurisdiction_prompt(document_text: str, jurisdiction: str) -> str:
-    """
-    Build a targeted cross-border conflict check prompt.
-    Automatically includes relevant law references.
-    """
-    # Determine which law sets to include
     laws_context = []
     for region, laws in JURISDICTION_LAWS.items():
         if region.lower() in jurisdiction.lower():
@@ -54,8 +53,8 @@ def get_jurisdiction_prompt(document_text: str, jurisdiction: str) -> str:
         "- General international contract law principles"
 
     return f"""
-You are a cross-border legal specialist. Review the document below and identify 
-clauses that may be UNENFORCEABLE or ILLEGAL under the following applicable laws:
+Review the document below and identify clauses that may be UNENFORCEABLE or ILLEGAL 
+under the following applicable laws:
 
 {laws_str}
 
@@ -63,13 +62,13 @@ For each conflict found, return a JSON array:
 [
   {{
     "clause": "<problematic clause text>",
-    "conflict": "<specific issue — what makes it unenforceable or risky>",
+    "conflict": "<specific issue>",
     "applicable_law": "<specific Act, Section, or Regulation>"
   }}
 ]
 
-Return ONLY the JSON array, no markdown, no explanation outside JSON.
-If no conflicts found, return an empty array: []
+Return ONLY the JSON array, no markdown, no explanation.
+If no conflicts found, return: []
 
 DOCUMENT:
 {str(document_text)[:6000]}
@@ -77,24 +76,29 @@ DOCUMENT:
 
 
 def check_jurisdiction_conflicts(document_text: str, jurisdiction: str) -> list:
-    """
-    Run a targeted jurisdiction conflict check.
-    Returns list of JurisdictionFlag dicts.
-    """
     prompt = get_jurisdiction_prompt(document_text, jurisdiction)
 
     try:
-        response = client.models.generate_content(
-    model="gemini-2.0-flash",
-    contents=prompt,
-    config=types.GenerateContentConfig(
-        temperature=0.1,
-        max_output_tokens=2048,
-    )
-)
-        raw = response.text.strip()
+        full_response = ""
+        completion = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a cross-border legal specialist. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            top_p=0.7,
+            max_tokens=2048,
+            stream=True
+        )
+
+        for chunk in completion:
+            if chunk.choices and chunk.choices[0].delta.content is not None:
+                full_response += chunk.choices[0].delta.content
+
+        raw = full_response.strip()
         raw = re.sub(r"^```(?:json)?\s*", "", raw)
         raw = re.sub(r"\s*```$", "", raw)
         return json.loads(raw)
     except Exception:
-        return []  # Non-fatal — main analysis still returns
+        return []
